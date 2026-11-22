@@ -219,10 +219,57 @@ def status_acervo() -> dict:
             "total": sum(por.values()), "indexado_em": em}
 
 
+def _esconder(texto: str) -> str:
+    return texto.replace(TOKEN, "TOKEN") if TOKEN else texto
+
+
+def _depurar(app):
+    """Registra pedido e resposta (sem o token) para diagnosticar a conexão com o Claude."""
+    VER = (b"user-agent", b"accept", b"content-type", b"mcp-protocol-version", b"mcp-session-id",
+           b"last-event-id", b"origin", b"host")
+
+    async def mw(scope, receive, send):
+        if scope["type"] != "http":
+            return await app(scope, receive, send)
+        hdr = {k.decode(): v.decode(errors="replace") for k, v in scope["headers"] if k in VER}
+        corpo = bytearray()
+
+        async def rec():
+            msg = await receive()
+            if msg["type"] == "http.request" and len(corpo) < 1500:
+                corpo.extend(msg.get("body", b"")[:1500])
+            return msg
+
+        pedido_logado = False
+        partes = [0]
+
+        async def env(msg):
+            nonlocal pedido_logado
+            if not pedido_logado:
+                pedido_logado = True
+                print(_esconder(f"[DBG] >> {scope['method']} {scope['path']} {hdr} corpo={bytes(corpo)[:1500]!r}"), flush=True)
+            if msg["type"] == "http.response.start":
+                rh = {k.decode(): v.decode(errors="replace") for k, v in msg.get("headers", [])}
+                print(f"[DBG] << status={msg['status']} headers={rh}", flush=True)
+            elif msg["type"] == "http.response.body" and partes[0] < 3:
+                partes[0] += 1
+                print(_esconder(f"[DBG] << corpo={msg.get('body', b'')[:1200]!r}"), flush=True)
+            await send(msg)
+
+        await app(scope, rec, env)
+
+    return mw
+
+
 if __name__ == "__main__":
     con = indice.conectar()
     indice.criar_esquema(con)
     con.close()
     atualizador.iniciar()
     print(f"Conector de leis no ar: http://0.0.0.0:{mcp.settings.port}/<TOKEN>/mcp", flush=True)
-    mcp.run(transport="streamable-http")
+    import uvicorn
+    app = mcp.streamable_http_app()
+    if os.environ.get("DEBUG_HTTP", "1") == "1":
+        app = _depurar(app)
+    uvicorn.run(app, host="0.0.0.0", port=mcp.settings.port, log_level="info", proxy_headers=True,
+                forwarded_allow_ips="*")
