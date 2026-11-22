@@ -1,0 +1,18 @@
+services:
+  leis-mcp:
+    build: .
+    container_name: leis-mcp
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      TZ: America/Sao_Paulo
+    ports:
+      # só a própria máquina enxerga; quem expõe para fora é o Tailscale Funnel
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - ./dados:/dados
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8787), 3)"]
+      interval: 1m
+      timeout: 5s
+      retries: 3
